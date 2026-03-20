@@ -24,7 +24,18 @@ public sealed class TreeCacheBatch : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ObjectDisposedException.ThrowIf(_executed, this);
-        _operations.Add(new BatchOperation { Type = OperationType.Set, Path = path, Value = value, Options = options });
+        _operations.Add(new BatchOperation { Type = OperationType.Set, Path = path, Value = value, Options = options, Tag = null });
+        return this;
+    }
+
+    /// <summary>
+    /// 添加一条带标签的写入操作。
+    /// </summary>
+    public TreeCacheBatch Set<T>(string path, T value, string? tag, MemoryCacheEntryOptions? options = null)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(_executed, this);
+        _operations.Add(new BatchOperation { Type = OperationType.Set, Path = path, Value = value, Options = options, Tag = tag });
         return this;
     }
 

@@ -109,6 +109,12 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     /// <inheritdoc />
     public ICacheEntry SetTree<T>(string path, T value, MemoryCacheEntryOptions? options = null)
     {
+        return SetTree(path, value, tag: null, options);
+    }
+
+    /// <inheritdoc />
+    public ICacheEntry SetTree<T>(string path, T value, string? tag, MemoryCacheEntryOptions? options = null)
+    {
         EnsureNotDisposed();
         ArgumentException.ThrowIfNullOrEmpty(path);
 
@@ -120,7 +126,7 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         _structureLock.EnterWriteLock();
         try
         {
-            EnsurePathExists(normalizedPath, segments);
+            EnsurePathExists(normalizedPath, segments, tag);
 
             var entry = _innerCache.CreateEntry(normalizedPath);
             entry.Value = value;
@@ -143,6 +149,50 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
                 node.Size = EstimateSize(value);
                 if (options.AbsoluteExpiration.HasValue)
                     node.ExpiresAt = options.AbsoluteExpiration.Value;
+
+                // 如果标签发生变化，先从旧索引移除
+                if (node.Tag != tag && node.Tag is not null)
+                {
+                    if (_tagIndex.TryGetValue(node.Tag, out var oldPaths))
+                    {
+                        oldPaths.Remove(normalizedPath);
+                        if (oldPaths.Count == 0)
+                        {
+                            _tagIndex.TryRemove(node.Tag, out _);
+                        }
+                    }
+                }
+
+                // 无论什么情况，只要新标签不为空，添加到索引
+                if (tag is not null)
+                {
+                    var taggedPaths = _tagIndex.GetOrAdd(tag, _ => new HashSet<string>(StringComparer.Ordinal));
+                    taggedPaths.Add(normalizedPath);
+                }
+
+                // 总是更新节点标签
+                if (node.Tag != tag)
+                {
+                    node.Tag = tag;
+                }
+            }
+            else
+            {
+                // 节点不存在，但这里不应该走到，因为 EnsurePathExists 已经创建了
+                // 防御性处理：确保节点存在
+                var nodeBuilder = new CacheNode
+                {
+                    Path = normalizedPath,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    Tag = tag
+                };
+                _nodes.TryAdd(normalizedPath, nodeBuilder);
+                if (tag is not null)
+                {
+                    var taggedPaths = _tagIndex.GetOrAdd(tag, _ => new HashSet<string>(StringComparer.Ordinal));
+                    taggedPaths.Add(normalizedPath);
+                }
+                node = nodeBuilder;
             }
 
             _statistics.RecordSet();
@@ -386,13 +436,15 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
 
     /// <summary>
     /// 确保完整路径上的每一级节点都存在，并维护父子关系。
+    /// 标签设置在目标路径节点上（最后一段）。
     /// </summary>
-    private void EnsurePathExists(string path, ReadOnlySpan<string> segments)
+    private void EnsurePathExists(string path, ReadOnlySpan<string> segments, string? tag)
     {
         for (var i = 0; i < segments.Length; i++)
         {
             var currentPath = string.Join(':', segments.Slice(0, i + 1).ToArray());
             var parentPath = i > 0 ? string.Join(':', segments.Slice(0, i).ToArray()) : null;
+            var isTargetNode = i == segments.Length - 1;
 
             if (!_nodes.ContainsKey(currentPath))
             {
@@ -400,7 +452,9 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
                 {
                     Path = currentPath,
                     ParentPath = parentPath,
-                    CreatedAt = DateTimeOffset.UtcNow
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    // 只有目标节点（用户调用 SetTree 的路径）才设置标签，中间节点始终为 null
+                    Tag = isTargetNode ? tag : null
                 };
 
                 _nodes.TryAdd(currentPath, node);
@@ -564,7 +618,7 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
                     case OperationType.Set:
                         if (op.Value is not null)
                         {
-                            var entry = SetTree(op.Path, op.Value, op.Options);
+                            var entry = SetTree(op.Path, op.Value, op.Tag, op.Options);
                             entry.Dispose();
                         }
                         break;
@@ -652,4 +706,5 @@ public sealed class BatchOperation
     public required string Path { get; init; }
     public object? Value { get; init; }
     public MemoryCacheEntryOptions? Options { get; init; }
+    public string? Tag { get; init; }
 }

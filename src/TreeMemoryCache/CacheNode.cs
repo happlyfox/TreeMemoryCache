@@ -11,6 +11,6 @@ internal sealed class CacheNode
     public DateTimeOffset CreatedAt { get; init; }
     public DateTimeOffset? ExpiresAt { get; set; }
     public long Size { get; set; }
-    public string? Tag { get; init; }
+    public string? Tag { get; set; }
     public int Version { get; set; }
 }

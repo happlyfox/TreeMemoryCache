@@ -20,6 +20,10 @@ public interface ITreeMemoryCache : IMemoryCache, IDisposable
     /// </summary>
     ICacheEntry SetTree<T>(string path, T value, MemoryCacheEntryOptions? options = null);
     /// <summary>
+    /// 按树路径写入缓存项，并指定标签。
+    /// </summary>
+    ICacheEntry SetTree<T>(string path, T value, string? tag, MemoryCacheEntryOptions? options = null);
+    /// <summary>
     /// 获取指定路径的直接子路径。
     /// </summary>
     IEnumerable<string> GetChildPaths(string path);

@@ -247,4 +247,106 @@ public class NormalBusinessFlowTests
         Assert.True(cache.TryGetTree<string>("Line:8:Config", out _));
         Assert.True(cache.TryGetTree<string>("Line:6:Stations", out _));
     }
+
+    [Fact]
+    public void Tag_FullWorkflow_ShouldAddIndexAndRemoveCorrectly()
+    {
+        using var cache = new TreeMemoryCache();
+
+        // 设置带标签的缓存项
+        cache.SetTree("Temp:Report:Monthly", "data1", "temp").Dispose();
+        cache.SetTree("Temp:Report:Weekly", "data2", "temp").Dispose();
+        cache.SetTree("Temp:Upload:image1", "bytes1", "temp").Dispose();
+        cache.SetTree("Permanent:Config:App", "config", "permanent").Dispose();
+
+        // 查询标签验证索引
+        var taggedPaths = cache.GetPathsByTag("temp").ToList();
+        Assert.Equal(3, taggedPaths.Count);
+        Assert.Contains("Temp:Report:Monthly", taggedPaths);
+        Assert.Contains("Temp:Report:Weekly", taggedPaths);
+        Assert.Contains("Temp:Upload:image1", taggedPaths);
+
+        var permanentPaths = cache.GetPathsByTag("permanent").ToList();
+        Assert.Single(permanentPaths);
+
+        // 按标签删除
+        cache.RemoveByTag("temp");
+
+        // 验证已删除
+        Assert.False(cache.TryGetTree<string>("Temp:Report:Monthly", out _));
+        Assert.False(cache.TryGetTree<string>("Temp:Report:Weekly", out _));
+        Assert.False(cache.TryGetTree<byte[]>("Temp:Upload:image1", out _));
+        // 验证未标签的不受影响
+        Assert.True(cache.TryGetTree<string>("Permanent:Config:App", out _));
+
+        // 验证索引已清空
+        Assert.Empty(cache.GetPathsByTag("temp"));
+    }
+
+    [Fact]
+    public void Tag_UpdateExistingNode_ShouldUpdateIndexCorrectly()
+    {
+        using var cache = new TreeMemoryCache();
+
+        // 初次设置无标签
+        cache.SetTree("Cache:Item1", "value1").Dispose();
+        Assert.Empty(cache.GetPathsByTag("tag1"));
+
+        // 更新并添加标签
+        cache.SetTree("Cache:Item1", "value1", "tag1").Dispose();
+        var paths = cache.GetPathsByTag("tag1").ToList();
+        Assert.Single(paths);
+        Assert.Contains("Cache:Item1", paths);
+
+        // 更新标签变更
+        cache.SetTree("Cache:Item1", "value2", "tag2").Dispose();
+        Assert.Empty(cache.GetPathsByTag("tag1"));
+        Assert.Single(cache.GetPathsByTag("tag2"));
+
+        // 移除标签
+        cache.SetTree("Cache:Item1", "value3").Dispose();
+        Assert.Empty(cache.GetPathsByTag("tag2"));
+    }
+
+    [Fact]
+    public void Tag_BatchOperation_ShouldSupportTag()
+    {
+        using var cache = new TreeMemoryCache();
+
+        using var batch = cache.CreateBatch();
+        batch.Set("Job:1:Result", "result1", "job-result");
+        batch.Set("Job:2:Result", "result2", "job-result");
+        batch.Set("Job:1:Log", "log1");
+        batch.Execute();
+
+        var paths = cache.GetPathsByTag("job-result").ToList();
+        Assert.Equal(2, paths.Count);
+
+        cache.RemoveByTag("job-result");
+        Assert.False(cache.TryGetTree<string>("Job:1:Result", out _));
+        Assert.False(cache.TryGetTree<string>("Job:2:Result", out _));
+        Assert.True(cache.TryGetTree<string>("Job:1:Log", out _));
+    }
+
+    [Fact]
+    public void Tag_AnyLevelNode_ShouldAllowSetTag()
+    {
+        using var cache = new TreeMemoryCache();
+
+        // 在不同分支的不同层级设置标签
+        cache.SetTree("RootA", "roota-value", "root-tag").Dispose();
+        cache.SetTree("RootA:Level1", "level1-value", "level1-tag").Dispose();
+        cache.SetTree("RootB:Level2", "level2-value", "level2-tag").Dispose();
+
+        // 每个层级都能查询到
+        Assert.Single(cache.GetPathsByTag("root-tag"));
+        Assert.Single(cache.GetPathsByTag("level1-tag"));
+        Assert.Single(cache.GetPathsByTag("level2-tag"));
+
+        // 删除中间层级标签不影响其他分支的其他层级
+        cache.RemoveByTag("level1-tag");
+        Assert.Single(cache.GetPathsByTag("root-tag"));
+        Assert.Single(cache.GetPathsByTag("level2-tag"));
+        Assert.Empty(cache.GetPathsByTag("level1-tag"));
+    }
 }
