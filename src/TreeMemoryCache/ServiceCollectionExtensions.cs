@@ -23,7 +23,7 @@ public static class TreeMemoryCacheServiceCollectionExtensions
         {
             var options = sp.GetService<MemoryCacheOptions>() ?? new MemoryCacheOptions();
             var logger = sp.GetService<ILogger<TreeMemoryCache>>();
-            return new TreeMemoryCache(options, logger);
+            return new TreeMemoryCache(persistence: null, options, logger);
         });
 
         // 同时注册 IMemoryCache 接口，指向同一个实例，保持兼容性
@@ -43,7 +43,7 @@ public static class TreeMemoryCacheServiceCollectionExtensions
             var options = new MemoryCacheOptions();
             setupAction(sp, options);
             var logger = sp.GetService<ILogger<TreeMemoryCache>>();
-            return new TreeMemoryCache(options, logger);
+            return new TreeMemoryCache(persistence: null, options, logger);
         });
 
         // 同时注册 IMemoryCache 接口，指向同一个实例，保持兼容性

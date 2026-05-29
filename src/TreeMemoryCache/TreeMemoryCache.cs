@@ -32,7 +32,13 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     /// <summary>
     /// 初始化 TreeMemoryCache 实例。
     /// </summary>
-    public TreeMemoryCache(MemoryCacheOptions? options = null, ILogger<TreeMemoryCache>? logger = null)
+    /// <param name="persistence">持久化器实例，默认为 null（无持久化）。</param>
+    /// <param name="options">内存缓存选项。</param>
+    /// <param name="logger">日志记录器。</param>
+    public TreeMemoryCache(
+        ITreeCachePersistence? persistence = null,
+        MemoryCacheOptions? options = null,
+        ILogger<TreeMemoryCache>? logger = null)
     {
         _innerCache = new MemoryCache(options ?? new MemoryCacheOptions());
         _nodes = new ConcurrentDictionary<string, CacheNode>(StringComparer.Ordinal);
@@ -40,20 +46,6 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         _structureLock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
         _logger = logger;
         _statistics = new CacheStatisticsCollector();
-    }
-
-    /// <summary>
-    /// 初始化 TreeMemoryCache 实例，支持持久化。
-    /// </summary>
-    /// <param name="persistence">持久化器实例。</param>
-    /// <param name="options">内存缓存选项。</param>
-    /// <param name="logger">日志记录器。</param>
-    public TreeMemoryCache(
-        ITreeCachePersistence? persistence = null,
-        MemoryCacheOptions? options = null,
-        ILogger<TreeMemoryCache>? logger = null)
-        : this(options, logger)
-    {
         _persistence = persistence;
     }
 

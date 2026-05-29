@@ -131,7 +131,7 @@ public class ErrorHandlingTests
         {
             SizeLimit = 100
         };
-        using var cache = new TreeMemoryCache(options);
+        using var cache = new TreeMemoryCache(persistence: null, options);
 
         for (var i = 0; i < 200; i++)
         {
