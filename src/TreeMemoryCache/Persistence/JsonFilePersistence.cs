@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace TreeMemoryCache.Persistence;
 
@@ -17,26 +18,6 @@ public sealed class JsonFilePersistence : ITreeCachePersistence
     public bool IsEnabled => _enabled;
     public DateTimeOffset? LastSavedAt { get; private set; }
     public int PendingChanges => _dirtyPaths.Count;
-
-    private List<CacheNodeSnapshot>? _collectedSnapshots;
-
-    /// <summary>
-    /// 收集快照数据供持久化使用。
-    /// </summary>
-    public void CollectSnapshots(List<CacheNodeSnapshot> snapshots)
-    {
-        _collectedSnapshots = snapshots;
-    }
-
-    /// <summary>
-    /// 提取快照数据用于恢复。
-    /// </summary>
-    public List<CacheNodeSnapshot>? ExtractSnapshots()
-    {
-        var result = _collectedSnapshots;
-        _collectedSnapshots = null;
-        return result;
-    }
 
     public JsonFilePersistence(
         string filePath,
@@ -64,14 +45,48 @@ public sealed class JsonFilePersistence : ITreeCachePersistence
     public int Save(CancellationToken cancellationToken = default)
         => SaveAsync(cancellationToken).GetAwaiter().GetResult();
 
-    public Task<int> SaveAsync(CancellationToken cancellationToken = default)
-        => Task.FromResult(0);
+    public async Task<int> SaveAsync(CancellationToken cancellationToken = default)
+    {
+        if (!_enabled)
+            return 0;
+
+        if (_snapshots == null || _snapshots.Count == 0)
+            return 0;
+
+        // 序列化为 JSON
+        var json = JsonSerializer.Serialize(_snapshots, _jsonOptions);
+
+        // 原子写入
+        var tempPath = _filePath + ".tmp";
+        await File.WriteAllTextAsync(tempPath, json, cancellationToken);
+
+        if (File.Exists(_filePath))
+            File.Delete(_filePath);
+        File.Move(tempPath, _filePath);
+
+        _dirtyPaths.Clear();
+        LastSavedAt = DateTimeOffset.UtcNow;
+
+        return _snapshots.Count;
+    }
 
     public int Load(CancellationToken cancellationToken = default)
         => LoadAsync(cancellationToken).GetAwaiter().GetResult();
 
-    public Task<int> LoadAsync(CancellationToken cancellationToken = default)
-        => Task.FromResult(0);
+    public async Task<int> LoadAsync(CancellationToken cancellationToken = default)
+    {
+        if (!_enabled || !Exists())
+            return 0;
+
+        var json = await File.ReadAllTextAsync(_filePath, cancellationToken);
+        var snapshots = JsonSerializer.Deserialize<List<CacheNodeSnapshot>>(json, _jsonOptions);
+
+        if (snapshots == null || snapshots.Count == 0)
+            return 0;
+
+        _snapshots = snapshots;
+        return snapshots.Count;
+    }
 
     public void MarkDirty(string path)
     {
@@ -100,9 +115,28 @@ public sealed class JsonFilePersistence : ITreeCachePersistence
         var fileInfo = new FileInfo(_filePath);
         return new StorageMetadata
         {
-            NodeCount = 0,
+            NodeCount = _snapshots?.Count ?? 0,
             CreatedAt = fileInfo.CreationTimeUtc,
             SizeBytes = fileInfo.Length
         };
+    }
+
+    // 内部快照存储
+    internal List<CacheNodeSnapshot>? _snapshots;
+
+    /// <summary>
+    /// 收集快照数据
+    /// </summary>
+    internal void CollectSnapshots(List<CacheNodeSnapshot> snapshots)
+    {
+        _snapshots = snapshots;
+    }
+
+    /// <summary>
+    /// 提取快照数据
+    /// </summary>
+    internal List<CacheNodeSnapshot>? ExtractSnapshots()
+    {
+        return _snapshots;
     }
 }
