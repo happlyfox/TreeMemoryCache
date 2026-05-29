@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <PackageId>TreeMemoryCache</PackageId>
-    <Version>0.0.1</Version>
+    <Version>0.1.0</Version>
     <Authors>fox</Authors>
     <Company>fox</Company>
     <Description>A tree-structured in-memory cache built on IMemoryCache, with cascade delete, pattern query and batch operations.</Description>

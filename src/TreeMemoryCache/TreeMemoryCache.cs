@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
+using TreeMemoryCache.Diagnostics;
+using TreeMemoryCache.Logging;
 
 namespace TreeMemoryCache;
 
@@ -438,6 +440,113 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     {
         EnsureNotDisposed();
         return _nodes;
+    }
+
+    /// <summary>
+    /// 获取所有根节点（没有父节点的节点）。
+    /// </summary>
+    internal IEnumerable<KeyValuePair<string, CacheNode>> GetRootNodes()
+    {
+        EnsureNotDisposed();
+        _structureLock.EnterReadLock();
+        try
+        {
+            return _nodes.Where(kv => kv.Value.ParentPath is null).ToList();
+        }
+        finally
+        {
+            _structureLock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// 获取综合诊断信息。
+    /// </summary>
+    public CacheDiagnostics GetDiagnostics()
+    {
+        EnsureNotDisposed();
+        _structureLock.EnterReadLock();
+        try
+        {
+            var orphanedPaths = new List<string>();
+            var tagDistribution = new Dictionary<string, int>(StringComparer.Ordinal);
+
+            foreach (var (path, node) in _nodes)
+            {
+                if (node.ParentPath is not null && !_nodes.ContainsKey(node.ParentPath))
+                {
+                    orphanedPaths.Add(path);
+                }
+
+                if (node.Tag is not null)
+                {
+                    tagDistribution.TryGetValue(node.Tag, out var count);
+                    tagDistribution[node.Tag] = count + 1;
+                }
+            }
+
+            var deepestPaths = _nodes.Keys
+                .OrderByDescending(p => p.Split(':').Length)
+                .Take(5)
+                .ToList();
+
+            return new CacheDiagnostics
+            {
+                TotalNodes = _nodes.Count,
+                OrphanedNodes = orphanedPaths.Count,
+                EstimatedMemoryBytes = _nodes.Values.Sum(n => n.Size),
+                TagDistribution = tagDistribution,
+                DeepestPaths = deepestPaths,
+                OrphanedPaths = orphanedPaths
+            };
+        }
+        finally
+        {
+            _structureLock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
+    /// 验证缓存树的一致性。
+    /// </summary>
+    public ValidationResult Validate()
+    {
+        EnsureNotDisposed();
+        return Validator.Validate(_nodes, _tagIndex);
+    }
+
+    private readonly ConcurrentQueue<OperationRecord> _operationHistory = new();
+    private const int MaxTrackedOperations = 1000;
+
+    /// <summary>
+    /// 获取操作历史记录。
+    /// </summary>
+    public IReadOnlyList<OperationRecord> GetOperationHistory()
+    {
+        return _operationHistory.ToArray().Reverse().Take(100).Reverse().ToList();
+    }
+
+    private void TrackOperation(OperationType type, string path, string? tag = null,
+        [CallerMemberName] string? memberName = null,
+        [CallerFilePath] string? filePath = null,
+        [CallerLineNumber] int lineNumber = 0)
+    {
+        var record = new OperationRecord
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            Type = type,
+            Path = path,
+            Tag = tag,
+            CallerMemberName = memberName,
+            CallerFilePath = filePath,
+            CallerLineNumber = lineNumber
+        };
+
+        _operationHistory.Enqueue(record);
+        while (_operationHistory.Count > MaxTrackedOperations)
+        {
+            _operationHistory.TryDequeue(out _);
+        }
     }
 
     /// <inheritdoc />

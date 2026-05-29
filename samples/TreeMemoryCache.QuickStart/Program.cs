@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Caching.Memory;
 using TreeMemoryCache;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -8,13 +9,13 @@ cache.SetTree("Line:6:Upward:Stations", new[] { "A站", "B站", "C站" }).Dispos
 cache.SetTree("Line:6:Downward:Stations", new[] { "C站", "B站", "A站" }).Dispose();
 cache.SetTree("Line:8:Upward:Stations", new[] { "X站", "Y站" }).Dispose();
 
-
-
-
 if (cache.TryGetTree<string[]>("Line:6:Upward:Stations", out var stations))
 {
     Console.WriteLine($"读取成功: {string.Join(" -> ", stations!)}");
 }
+
+
+cache.RemoveByTag("line:1");
 
 var children = cache.GetChildPaths("Line:6").ToList();
 Console.WriteLine($"Line:6 直接子节点: {string.Join(", ", children)}");

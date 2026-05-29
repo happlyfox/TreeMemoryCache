@@ -26,6 +26,10 @@ public static class TreeMemoryCacheServiceCollectionExtensions
             return new TreeMemoryCache(options, logger);
         });
 
+        // 同时注册 IMemoryCache 接口，指向同一个实例，保持兼容性
+        services.AddSingleton<IMemoryCache>(sp =>
+            (IMemoryCache)sp.GetRequiredService<ITreeMemoryCache>());
+
         return services;
     }
 
@@ -41,6 +45,10 @@ public static class TreeMemoryCacheServiceCollectionExtensions
             var logger = sp.GetService<ILogger<TreeMemoryCache>>();
             return new TreeMemoryCache(options, logger);
         });
+
+        // 同时注册 IMemoryCache 接口，指向同一个实例，保持兼容性
+        services.AddSingleton<IMemoryCache>(sp =>
+            (IMemoryCache)sp.GetRequiredService<ITreeMemoryCache>());
 
         return services;
     }

@@ -74,10 +74,29 @@ public sealed class TreeCacheBatch : IDisposable
 
     /// <summary>
     /// 释放批量对象并清空待执行操作。
+    /// 如果有未执行的操作，抛出异常以防止静默丢弃。
     /// </summary>
     public void Dispose()
     {
+        if (_executed)
+        {
+            // 已执行过，正常释放
+            _disposed = true;
+            _operations.Clear();
+            return;
+        }
+
+        if (_operations.Count > 0)
+        {
+            // 有未执行的操作，抛出异常警告用户
+            _disposed = true;
+            var pendingOps = _operations.Count;
+            _operations.Clear();
+            throw new InvalidOperationException(
+                $"批量操作未执行就被释放了。{pendingOps} 个待执行的操作已被丢弃。" +
+                "请调用 Execute() 方法后再释放，或使用 using 语句配合 Execute()。");
+        }
+
         _disposed = true;
-        _operations.Clear();
     }
 }

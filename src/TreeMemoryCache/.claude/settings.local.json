@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//e/ai-project/TreeMemoryCache/tests/TreeMemoryCache.Tests/**)",
+      "Bash(dotnet test:*)"
+    ]
+  }
+}
