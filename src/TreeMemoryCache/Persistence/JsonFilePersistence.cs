@@ -18,6 +18,26 @@ public sealed class JsonFilePersistence : ITreeCachePersistence
     public DateTimeOffset? LastSavedAt { get; private set; }
     public int PendingChanges => _dirtyPaths.Count;
 
+    private List<CacheNodeSnapshot>? _collectedSnapshots;
+
+    /// <summary>
+    /// 收集快照数据供持久化使用。
+    /// </summary>
+    public void CollectSnapshots(List<CacheNodeSnapshot> snapshots)
+    {
+        _collectedSnapshots = snapshots;
+    }
+
+    /// <summary>
+    /// 提取快照数据用于恢复。
+    /// </summary>
+    public List<CacheNodeSnapshot>? ExtractSnapshots()
+    {
+        var result = _collectedSnapshots;
+        _collectedSnapshots = null;
+        return result;
+    }
+
     public JsonFilePersistence(
         string filePath,
         PersistenceStrategy strategy = PersistenceStrategy.Synchronous)

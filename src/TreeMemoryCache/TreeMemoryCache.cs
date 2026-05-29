@@ -6,6 +6,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using TreeMemoryCache.Diagnostics;
 using TreeMemoryCache.Logging;
+using TreeMemoryCache.Persistence;
 
 namespace TreeMemoryCache;
 
@@ -20,7 +21,13 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     private readonly ReaderWriterLockSlim _structureLock;
     private readonly ILogger<TreeMemoryCache>? _logger;
     private readonly CacheStatisticsCollector _statistics;
+    private readonly ITreeCachePersistence? _persistence;
     private bool _disposed;
+
+    /// <summary>
+    /// 获取持久化器实例。
+    /// </summary>
+    public ITreeCachePersistence? Persistence => _persistence;
 
     /// <summary>
     /// 初始化 TreeMemoryCache 实例。
@@ -33,6 +40,21 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         _structureLock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
         _logger = logger;
         _statistics = new CacheStatisticsCollector();
+    }
+
+    /// <summary>
+    /// 初始化 TreeMemoryCache 实例，支持持久化。
+    /// </summary>
+    /// <param name="persistence">持久化器实例。</param>
+    /// <param name="options">内存缓存选项。</param>
+    /// <param name="logger">日志记录器。</param>
+    public TreeMemoryCache(
+        ITreeCachePersistence? persistence = null,
+        MemoryCacheOptions? options = null,
+        ILogger<TreeMemoryCache>? logger = null)
+        : this(options, logger)
+    {
+        _persistence = persistence;
     }
 
     private void EnsureNotDisposed()
@@ -469,6 +491,142 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         {
             _structureLock.ExitReadLock();
         }
+    }
+
+    /// <summary>
+    /// 获取所有缓存节点的快照，用于持久化。
+    /// </summary>
+    internal List<CacheNodeSnapshot> GetAllSnapshots()
+    {
+        var snapshots = new List<CacheNodeSnapshot>();
+
+        _structureLock.EnterReadLock();
+        try
+        {
+            foreach (var (path, node) in _nodes)
+            {
+                _innerCache.TryGetValue(path, out var value);
+
+                snapshots.Add(new CacheNodeSnapshot
+                {
+                    Path = node.Path,
+                    ParentPath = node.ParentPath,
+                    ChildPaths = node.ChildPaths.ToList(),
+                    Tag = node.Tag,
+                    CreatedAt = node.CreatedAt,
+                    ExpiresAt = node.ExpiresAt,
+                    Size = node.Size,
+                    Value = value
+                });
+            }
+        }
+        finally
+        {
+            _structureLock.ExitReadLock();
+        }
+
+        return snapshots;
+    }
+
+    /// <summary>
+    /// 从快照列表恢复缓存节点，用于加载持久化数据。
+    /// </summary>
+    internal void RestoreFromSnapshots(IEnumerable<CacheNodeSnapshot> snapshots)
+    {
+        _structureLock.EnterWriteLock();
+        try
+        {
+            foreach (var snapshot in snapshots)
+            {
+                // 重建 CacheNode
+                var node = new CacheNode
+                {
+                    Path = snapshot.Path,
+                    ParentPath = snapshot.ParentPath,
+                    ChildPaths = new HashSet<string>(snapshot.ChildPaths, StringComparer.Ordinal),
+                    CreatedAt = snapshot.CreatedAt,
+                    ExpiresAt = snapshot.ExpiresAt,
+                    Size = snapshot.Size,
+                    Tag = snapshot.Tag
+                };
+
+                _nodes[snapshot.Path] = node;
+
+                // 重建父节点引用
+                if (snapshot.ParentPath != null && _nodes.TryGetValue(snapshot.ParentPath, out var parentNode))
+                {
+                    parentNode.ChildPaths.Add(snapshot.Path);
+                }
+
+                // 重建缓存值
+                if (snapshot.Value != null)
+                {
+                    var entry = _innerCache.CreateEntry(snapshot.Path);
+                    entry.Value = snapshot.Value;
+                    if (snapshot.ExpiresAt.HasValue)
+                        entry.AbsoluteExpiration = snapshot.ExpiresAt.Value;
+                    entry.Dispose();
+                }
+
+                // 重建标签索引
+                if (!string.IsNullOrEmpty(snapshot.Tag))
+                {
+                    var taggedPaths = _tagIndex.GetOrAdd(snapshot.Tag, _ => new HashSet<string>(StringComparer.Ordinal));
+                    taggedPaths.Add(snapshot.Path);
+                }
+            }
+        }
+        finally
+        {
+            _structureLock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// 将缓存数据保存到持久化存储。
+    /// </summary>
+    /// <returns>保存的节点数量。</returns>
+    public async Task<int> SaveAsync(CancellationToken cancellationToken = default)
+    {
+        if (_persistence == null || !_persistence.IsEnabled)
+            return 0;
+
+        // 收集所有快照
+        var snapshots = GetAllSnapshots();
+
+        // 通过事件让持久化器获取快照
+        if (_persistence is JsonFilePersistence jfp)
+        {
+            jfp.CollectSnapshots(snapshots);
+        }
+
+        return await _persistence.SaveAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// 从持久化存储加载缓存数据。
+    /// </summary>
+    /// <returns>加载的节点数量。</returns>
+    public async Task<int> LoadAsync(CancellationToken cancellationToken = default)
+    {
+        if (_persistence == null || !_persistence.IsEnabled)
+            return 0;
+
+        if (!_persistence.Exists())
+            return 0;
+
+        // 通过事件让持久化器恢复快照
+        if (_persistence is JsonFilePersistence jfp)
+        {
+            var snapshots = jfp.ExtractSnapshots();
+            if (snapshots != null)
+            {
+                RestoreFromSnapshots(snapshots);
+                return snapshots.Count;
+            }
+        }
+
+        return await _persistence.LoadAsync(cancellationToken);
     }
 
     /// <summary>
