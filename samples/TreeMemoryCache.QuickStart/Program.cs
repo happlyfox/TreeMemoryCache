@@ -5,9 +5,10 @@ Console.OutputEncoding = System.Text.Encoding.UTF8;
 
 using var cache = new TreeMemoryCache.TreeMemoryCache();
 
-cache.SetTree("Line:6:Upward:Stations", new[] { "A站", "B站", "C站" }).Dispose();
-cache.SetTree("Line:6:Downward:Stations", new[] { "C站", "B站", "A站" }).Dispose();
-cache.SetTree("Line:8:Upward:Stations", new[] { "X站", "Y站" }).Dispose();
+// 使用 SetTreeValue 扩展方法，无需显式调用 Dispose()
+cache.SetTreeValue("Line:6:Upward:Stations", new[] { "A站", "B站", "C站" });
+cache.SetTreeValue("Line:6:Downward:Stations", new[] { "C站", "B站", "A站" });
+cache.SetTreeValue("Line:8:Upward:Stations", new[] { "X站", "Y站" });
 
 if (cache.TryGetTree<string[]>("Line:6:Upward:Stations", out var stations))
 {
