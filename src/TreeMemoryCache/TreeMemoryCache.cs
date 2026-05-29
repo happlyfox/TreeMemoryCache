@@ -22,7 +22,7 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     private readonly ILogger<TreeMemoryCache>? _logger;
     private readonly CacheStatisticsCollector _statistics;
     private readonly ITreeCachePersistence? _persistence;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     /// <summary>
     /// 获取持久化器实例。
@@ -721,21 +721,18 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+            return;
 
-        _structureLock.EnterWriteLock();
-        try
-        {
-            _innerCache.Dispose();
-            _nodes.Clear();
-            _tagIndex.Clear();
-            _disposed = true;
-        }
-        finally
-        {
-            _structureLock.ExitWriteLock();
-            _structureLock.Dispose();
-        }
+        // 先释放内部资源（可能触发驱逐回调），此时还未持有锁
+        _innerCache.Dispose();
+        _nodes.Clear();
+        _tagIndex.Clear();
+
+        _disposed = true;
+
+        // 确保锁正确释放和销毁
+        _structureLock?.Dispose();
     }
 
     /// <summary>
