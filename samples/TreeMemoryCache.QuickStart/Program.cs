@@ -1,9 +1,15 @@
 using Microsoft.Extensions.Caching.Memory;
 using TreeMemoryCache;
+using TreeMemoryCache.Persistence;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-using var cache = new TreeMemoryCache.TreeMemoryCache();
+// 持久化示例
+var persistence = new JsonFilePersistence("cache/tree.json", PersistenceStrategy.Synchronous);
+using var cache = new TreeMemoryCache.TreeMemoryCache(persistence);
+
+// 启动时加载已有数据
+await cache.LoadAsync();
 
 // 使用 SetTreeValue 扩展方法，无需显式调用 Dispose()
 cache.SetTreeValue("Line:6:Upward:Stations", new[] { "A站", "B站", "C站" });
@@ -14,6 +20,11 @@ if (cache.TryGetTree<string[]>("Line:6:Upward:Stations", out var stations))
 {
     Console.WriteLine($"读取成功: {string.Join(" -> ", stations!)}");
 }
+
+// 保存数据到文件
+await cache.SaveAsync();
+var metadata = await persistence.GetMetadataAsync();
+Console.WriteLine($"持久化保存完成，文件大小: {metadata?.SizeBytes ?? 0} 字节");
 
 
 cache.RemoveByTag("line:1");
