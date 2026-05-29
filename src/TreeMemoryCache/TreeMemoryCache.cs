@@ -217,30 +217,57 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         _structureLock.EnterWriteLock();
         try
         {
-            var pathsToRemove = CollectDescendants(normalizedPath);
-            if (options.IncludeSelf)
+            // 如果是孤儿化模式，只处理自身节点，不处理后代
+            if (options.OrphanChildren)
             {
-                pathsToRemove.Insert(0, normalizedPath);
+                // 断开子节点的父子引用，但不删除它们
+                if (_nodes.TryGetValue(normalizedPath, out var node))
+                {
+                    foreach (var childPath in node.ChildPaths.ToList())
+                    {
+                        if (_nodes.TryGetValue(childPath, out var childNode))
+                        {
+                            childNode.ParentPath = null; // 孤儿化
+                        }
+                    }
+                }
+
+                // 删除自身
+                RemoveSingleNode(normalizedPath);
+                _innerCache.Remove(normalizedPath);
+
+                stopwatch.Stop();
+                _statistics.RecordCascadeDelete(1, stopwatch.Elapsed);
+                _logger?.LogInformation("Orphan children completed: {Path}", normalizedPath);
             }
             else
             {
-                pathsToRemove = pathsToRemove.Where(p => p != normalizedPath).ToList();
+                // 原有逻辑：级联删除
+                var pathsToRemove = CollectDescendants(normalizedPath);
+                if (options.IncludeSelf)
+                {
+                    pathsToRemove.Insert(0, normalizedPath);
+                }
+                else
+                {
+                    pathsToRemove = pathsToRemove.Where(p => p != normalizedPath).ToList();
+                }
+
+                var count = 0;
+                foreach (var nodePath in pathsToRemove)
+                {
+                    RemoveSingleNode(nodePath);
+                    _innerCache.Remove(nodePath);
+                    count++;
+
+                    options.OnProgress?.Invoke(count);
+                }
+
+                stopwatch.Stop();
+                _statistics.RecordCascadeDelete(count, stopwatch.Elapsed);
+                _logger?.LogInformation("Cascade delete completed: {Path}, {Count} nodes removed in {Duration}ms",
+                    normalizedPath, count, stopwatch.ElapsedMilliseconds);
             }
-
-            var count = 0;
-            foreach (var nodePath in pathsToRemove)
-            {
-                RemoveSingleNode(nodePath);
-                _innerCache.Remove(nodePath);
-                count++;
-
-                options.OnProgress?.Invoke(count);
-            }
-
-            stopwatch.Stop();
-            _statistics.RecordCascadeDelete(count, stopwatch.Elapsed);
-            _logger?.LogInformation("Cascade delete completed: {Path}, {Count} nodes removed in {Duration}ms",
-                normalizedPath, count, stopwatch.ElapsedMilliseconds);
         }
         finally
         {
@@ -407,6 +434,12 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         };
     }
 
+    internal IReadOnlyDictionary<string, CacheNode> GetNodesForDebug()
+    {
+        EnsureNotDisposed();
+        return _nodes;
+    }
+
     /// <inheritdoc />
     public TreeCacheBatch CreateBatch()
     {
@@ -469,24 +502,22 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
 
     /// <summary>
     /// 删除单个节点并修复父子引用与标签索引。
+    /// 子节点的父子关系会被断开（孤儿化），而不是跳级连接到祖父节点。
     /// </summary>
     private void RemoveSingleNode(string path)
     {
         if (_nodes.TryRemove(path, out var node))
         {
+            // 从父节点的子节点列表中移除
             if (node.ParentPath is not null && _nodes.TryGetValue(node.ParentPath, out var parentNode))
             {
                 parentNode.ChildPaths.Remove(path);
             }
 
-            foreach (var childPath in node.ChildPaths.ToList())
-            {
-                if (_nodes.TryGetValue(childPath, out var childNode))
-                {
-                    childNode.ParentPath = node.ParentPath;
-                }
-            }
+            // 子节点保持孤儿状态（ParentPath 保持不变，指向已不存在的节点）
+            // 不再将其重新连接到祖父节点，避免破坏树形语义
 
+            // 清理标签索引
             if (node.Tag is not null && _tagIndex.TryGetValue(node.Tag, out var taggedPaths))
             {
                 taggedPaths.Remove(path);
