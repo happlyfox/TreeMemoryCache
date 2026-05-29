@@ -284,34 +284,30 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         ArgumentException.ThrowIfNullOrEmpty(path);
 
         var normalizedPath = NormalizePath(path);
-        var pathsToRemove = new List<string>();
 
-        _structureLock.EnterReadLock();
+        // 在单个写锁内完成所有收集和删除操作，避免竞态条件
+        _structureLock.EnterWriteLock();
+        List<string> pathsToRemove;
         try
         {
             pathsToRemove = CollectDescendants(normalizedPath);
             pathsToRemove.Insert(0, normalizedPath);
-        }
-        finally
-        {
-            _structureLock.ExitReadLock();
-        }
 
-        foreach (var nodePath in pathsToRemove)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            _structureLock.EnterWriteLock();
-            try
+            foreach (var nodePath in pathsToRemove)
             {
                 RemoveSingleNode(nodePath);
                 _innerCache.Remove(nodePath);
             }
-            finally
-            {
-                _structureLock.ExitWriteLock();
-            }
+        }
+        finally
+        {
+            _structureLock.ExitWriteLock();
+        }
 
+        // 释放锁后再 yield return，避免在锁内 await
+        foreach (var nodePath in pathsToRemove)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
             await Task.Yield();
             yield return nodePath;
         }
@@ -365,13 +361,21 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         EnsureNotDisposed();
         ArgumentException.ThrowIfNullOrEmpty(pattern);
 
-        return pattern switch
+        _structureLock.EnterReadLock();
+        try
         {
-            "*" => _nodes.Keys.ToList(),
-            "*:*" => _nodes.Keys.Where(k => k.Contains(':')).ToList(),
-            _ when pattern.Contains('*') => MatchPattern(pattern),
-            _ => _nodes.Keys.Where(k => k == pattern).ToList()
-        };
+            return pattern switch
+            {
+                "*" => _nodes.Keys.ToList(),
+                "*:*" => _nodes.Keys.Where(k => k.Contains(':')).ToList(),
+                _ when pattern.Contains('*') => MatchPattern(pattern),
+                _ => _nodes.Keys.Where(k => k == pattern).ToList()
+            };
+        }
+        finally
+        {
+            _structureLock.ExitReadLock();
+        }
     }
 
     /// <inheritdoc />
@@ -405,35 +409,43 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     public CacheStatistics GetStatistics()
     {
         EnsureNotDisposed();
-        var nodeCountByRoot = new Dictionary<string, long>();
-        long totalNodeCount = 0;
-        long totalCacheSize = 0;
-
-        foreach (var (path, node) in _nodes)
+        _structureLock.EnterReadLock();
+        try
         {
-            if (!_innerCache.TryGetValue(path, out _))
+            var nodeCountByRoot = new Dictionary<string, long>();
+            long totalNodeCount = 0;
+            long totalCacheSize = 0;
+
+            foreach (var (path, node) in _nodes)
             {
-                continue;
+                if (!_innerCache.TryGetValue(path, out _))
+                {
+                    continue;
+                }
+
+                totalNodeCount++;
+                totalCacheSize += node.Size;
+
+                var root = GetRootPath(path);
+                nodeCountByRoot.TryGetValue(root, out var count);
+                nodeCountByRoot[root] = count + 1;
             }
 
-            totalNodeCount++;
-            totalCacheSize += node.Size;
-
-            var root = GetRootPath(path);
-            nodeCountByRoot.TryGetValue(root, out var count);
-            nodeCountByRoot[root] = count + 1;
+            return new CacheStatistics
+            {
+                TotalNodeCount = totalNodeCount,
+                TotalCacheSize = totalCacheSize,
+                HitCount = _statistics.HitCount,
+                MissCount = _statistics.MissCount,
+                CascadeDeleteCount = _statistics.CascadeDeleteCount,
+                AverageAccessTime = _statistics.AverageAccessTime,
+                NodeCountByRoot = nodeCountByRoot
+            };
         }
-
-        return new CacheStatistics
+        finally
         {
-            TotalNodeCount = totalNodeCount,
-            TotalCacheSize = totalCacheSize,
-            HitCount = _statistics.HitCount,
-            MissCount = _statistics.MissCount,
-            CascadeDeleteCount = _statistics.CascadeDeleteCount,
-            AverageAccessTime = _statistics.AverageAccessTime,
-            NodeCountByRoot = nodeCountByRoot
-        };
+            _structureLock.ExitReadLock();
+        }
     }
 
     internal IReadOnlyDictionary<string, CacheNode> GetNodesForDebug()
@@ -630,6 +642,11 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
             if (node.Tag is not null && _tagIndex.TryGetValue(node.Tag, out var taggedPaths))
             {
                 taggedPaths.Remove(path);
+                // 如果标签集合为空，清理整个标签索引条目
+                if (taggedPaths.Count == 0)
+                {
+                    _tagIndex.TryRemove(node.Tag, out _);
+                }
             }
         }
     }
