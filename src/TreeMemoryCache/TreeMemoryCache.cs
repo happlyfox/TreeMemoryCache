@@ -30,7 +30,7 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     private int _disposed;
 
     /// <summary>
-    /// 获取持久化器实例。
+    /// 获取持久化器实例。如果构造时未传入持久化器则返回 <c>null</c>,此时 SaveAsync/LoadAsync 为 no-op。
     /// </summary>
     public ITreeCachePersistence? Persistence => _persistence;
 
@@ -634,9 +634,14 @@ _structureLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
     }
 
     /// <summary>
-    /// 将缓存数据保存到持久化存储。
+    /// 将当前所有缓存项序列化到持久化存储。
     /// </summary>
-    /// <returns>保存的节点数量。</returns>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>已保存的节点数量;未配置持久化或未启用时返回 0。</returns>
+    /// <remarks>
+    /// 当前仅对 <see cref="Persistence.JsonFilePersistence"/> 提供内置实现,
+    /// 其他持久化器需要在 LoadAsync 之前通过回调方式注入快照。
+    /// </remarks>
     public async Task<int> SaveAsync(CancellationToken cancellationToken = default)
     {
         if (_persistence == null || !_persistence.IsEnabled)
@@ -655,9 +660,13 @@ _structureLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
     }
 
     /// <summary>
-    /// 从持久化存储加载缓存数据。
+    /// 从持久化存储加载缓存数据并恢复到当前实例。
     /// </summary>
-    /// <returns>加载的节点数量。</returns>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>已加载的节点数量;未配置持久化或存储文件不存在时返回 0。</returns>
+    /// <remarks>
+    /// 加载会**追加**到现有缓存,不会清空。如需重置请新建实例。
+    /// </remarks>
     public async Task<int> LoadAsync(CancellationToken cancellationToken = default)
     {
         if (_persistence == null || !_persistence.IsEnabled)
@@ -681,8 +690,10 @@ _structureLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
     }
 
     /// <summary>
-    /// 获取综合诊断信息。
+    /// 获取综合诊断信息,包括孤儿节点、标签分布、最深路径等。
     /// </summary>
+    /// <returns>当前的 <see cref="Diagnostics.CacheDiagnostics"/> 快照。</returns>
+    /// <exception cref="ObjectDisposedException">当缓存已 Dispose 后调用时抛出。</exception>
     public CacheDiagnostics GetDiagnostics()
     {
         EnsureNotDisposed();
@@ -727,8 +738,10 @@ _structureLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
     }
 
     /// <summary>
-    /// 验证缓存树的一致性。
+    /// 验证缓存树结构的一致性,检查死父引用、孤立标签等。
     /// </summary>
+    /// <returns>包含错误与警告的 <see cref="Diagnostics.ValidationResult"/>。<c>IsValid=true</c> 表示无错误。</returns>
+    /// <exception cref="ObjectDisposedException">当缓存已 Dispose 后调用时抛出。</exception>
     public ValidationResult Validate()
     {
         EnsureNotDisposed();
@@ -739,8 +752,12 @@ _structureLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
     private const int MaxTrackedOperations = 1000;
 
     /// <summary>
-    /// 获取操作历史记录。
+    /// 获取最近的操作历史记录(最多 1000 条,按时间倒序)。
     /// </summary>
+    /// <returns>最近的 <see cref="Diagnostics.OperationRecord"/> 列表。</returns>
+    /// <remarks>
+    /// 主要用于诊断与调试,生产代码不应依赖此 API。
+    /// </remarks>
     public IReadOnlyList<OperationRecord> GetOperationHistory()
     {
         return _operationHistory.ToArray().Reverse().Take(100).Reverse().ToList();
@@ -1096,23 +1113,53 @@ _structureLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
 }
 
 /// <summary>
-/// 批量操作类型。
+/// 批量操作类型,用于 <see cref="TreeCacheBatch"/> 内每个操作的语义区分。
 /// </summary>
 public enum OperationType
 {
+    /// <summary>
+    /// 写入或覆盖一个缓存项,需要 <see cref="BatchOperation.Value"/>。
+    /// </summary>
     Set,
+
+    /// <summary>
+    /// 删除单个节点(不含后代)。
+    /// </summary>
     Remove,
+
+    /// <summary>
+    /// 级联删除整棵子树(含自身)。
+    /// </summary>
     RemoveTree
 }
 
 /// <summary>
-/// 批量操作模型。
+/// 批量操作模型,描述 <see cref="TreeCacheBatch.Execute"/> 时要执行的一条原子操作。
 /// </summary>
 public sealed class BatchOperation
 {
+    /// <summary>
+    /// 操作类型,决定 <see cref="Value"/>、<see cref="Options"/>、<see cref="Tag"/> 哪些字段有效。
+    /// </summary>
     public required OperationType Type { get; init; }
+
+    /// <summary>
+    /// 目标路径。
+    /// </summary>
     public required string Path { get; init; }
+
+    /// <summary>
+    /// 写入的值(仅 <see cref="OperationType.Set"/> 使用)。
+    /// </summary>
     public object? Value { get; init; }
+
+    /// <summary>
+    /// 内存缓存条目选项(仅 <see cref="OperationType.Set"/> 使用)。
+    /// </summary>
     public MemoryCacheEntryOptions? Options { get; init; }
+
+    /// <summary>
+    /// 标签(仅 <see cref="OperationType.Set"/> 使用)。
+    /// </summary>
     public string? Tag { get; init; }
 }

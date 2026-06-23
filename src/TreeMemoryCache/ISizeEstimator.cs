@@ -1,7 +1,7 @@
 namespace TreeMemoryCache;
 
 /// <summary>
-/// 自定义缓存项大小估算器。
+/// 自定义缓存项大小估算器,通过 <see cref="TreeMemoryCache"/> 构造函数注入。
 /// </summary>
 /// <remarks>
 /// TreeMemoryCache 不强制估算缓存项大小(等同 .NET 原生
@@ -13,6 +13,8 @@ public interface ISizeEstimator
     /// <summary>
     /// 估算给定缓存项的大小(字节)。
     /// </summary>
+    /// <typeparam name="T">值类型。</typeparam>
+    /// <param name="value">要估算的值。</param>
     /// <returns>估算的字节数;返回 0 表示"不参与大小统计"。</returns>
     long EstimateSize<T>(T value);
 }
