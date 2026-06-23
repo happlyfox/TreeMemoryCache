@@ -15,7 +15,7 @@ internal static class Validator
         {
             if (node.ParentPath is not null && !nodes.ContainsKey(node.ParentPath))
             {
-                errors.Add($"孤儿节点: {path} 指向不存在的父节点 {node.ParentPath}");
+                errors.Add($"DeadParentLink: {path} 指向不存在的父节点 {node.ParentPath}");
             }
         }
 
