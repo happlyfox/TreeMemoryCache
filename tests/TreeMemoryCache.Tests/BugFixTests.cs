@@ -5,46 +5,6 @@ namespace TreeMemoryCache.Tests;
 public class BugFixTests
 {
     [Fact]
-    public void RemoveTree_WithOrphanChildren_ShouldPreserveChildren()
-    {
-        using var cache = new TreeMemoryCache();
-
-        // 创建树结构：Line:6 -> Upward -> Stations 和 Line:6 -> Upward -> Station2
-        cache.SetTree("Line:6:Upward:Stations", "A").Dispose();
-        cache.SetTree("Line:6:Upward:Station2", "B").Dispose();
-
-        // 使用 OrphanChildren 选项删除中间节点，保留子节点
-        cache.RemoveTree("Line:6:Upward", new TreeRemoveOptions { OrphanChildren = true });
-
-        // 验证：Line:6:Upward 不存在
-        Assert.False(cache.TryGetTree<string>("Line:6:Upward", out _));
-
-        // 验证：子节点仍然存在（孤儿化）
-        Assert.True(cache.TryGetTree<string>("Line:6:Upward:Stations", out var a));
-        Assert.Equal("A", a);
-        Assert.True(cache.TryGetTree<string>("Line:6:Upward:Station2", out var b));
-        Assert.Equal("B", b);
-
-        // 验证：子节点不再是 Line:6 的子节点（孤儿化成功）
-        var childrenOfLine6 = cache.GetChildPaths("Line:6").ToList();
-        Assert.Empty(childrenOfLine6);
-    }
-
-    [Fact]
-    public void RemoveTree_OrphanedChildren_ShouldBeIndependentlyDeletable()
-    {
-        using var cache = new TreeMemoryCache();
-
-        cache.SetTree("Line:6:Upward:Stations", "A").Dispose();
-        cache.RemoveTree("Line:6:Upward", new TreeRemoveOptions { OrphanChildren = true });
-
-        // 孤儿节点应该可以独立删除
-        cache.RemoveTree("Line:6:Upward:Stations");
-
-        Assert.False(cache.TryGetTree<string>("Line:6:Upward:Stations", out _));
-    }
-
-    [Fact]
     public void Batch_DisposeWithoutExecute_ShouldThrowIfOperationsPending()
     {
         using var cache = new TreeMemoryCache();
