@@ -97,13 +97,6 @@ cache.RemoveTree("Line:6:Upward:Stations");
 // 级联删除 "Line:6" 下的所有节点
 cache.RemoveTree("Line:6");
 
-// 只删除自身，保留后代
-cache.RemoveTree("Line:6", new TreeRemoveOptions
-{
-    IncludeSelf = true,
-    OrphanChildren = true   // 断开父子关系但保留子节点
-});
-
 // 删除后代但保留自身
 cache.RemoveTree("Line:6", new TreeRemoveOptions
 {
