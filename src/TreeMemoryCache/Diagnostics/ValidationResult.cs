@@ -1,7 +1,7 @@
 namespace TreeMemoryCache.Diagnostics;
 
 /// <summary>
-/// 验证结果的轻量级 DTO,通过 <see cref="ITreeMemoryCache.Validate"/> 获取。
+/// 验证结果的轻量级 DTO,通过 <see cref="TreeMemoryCache.Validate()"/> 获取。
 /// </summary>
 /// <remarks>
 /// <see cref="IsValid"/> 仅反映 <see cref="Errors"/> 是否为空,警告(<see cref="Warnings"/>)

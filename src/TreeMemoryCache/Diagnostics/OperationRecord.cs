@@ -6,7 +6,7 @@ namespace TreeMemoryCache.Diagnostics;
 /// 单次缓存操作的追踪记录,用于审计与诊断。
 /// </summary>
 /// <remarks>
-/// 由 <see cref="ITreeMemoryCache.GetOperationHistory"/> 返回。
+/// 由 <see cref="TreeMemoryCache.GetOperationHistory()"/> 返回。
 /// 容量上限 1000 条,超出后按 FIFO 淘汰,生产环境不应依赖此 API 做业务判断。
 /// </remarks>
 public sealed class OperationRecord
