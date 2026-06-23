@@ -22,7 +22,8 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     private readonly ILogger<TreeMemoryCache>? _logger;
     private readonly CacheStatisticsCollector _statistics;
     private readonly ITreeCachePersistence? _persistence;
-    private volatile bool _disposed;
+    private readonly ISizeEstimator _sizeEstimator;
+    private int _disposed;
 
     /// <summary>
     /// 获取持久化器实例。
@@ -35,10 +36,12 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     /// <param name="persistence">持久化器实例，默认为 null（无持久化）。</param>
     /// <param name="options">内存缓存选项。</param>
     /// <param name="logger">日志记录器。</param>
+    /// <param name="sizeEstimator">自定义大小估算器,默认为 <see cref="DefaultSizeEstimator"/>。</param>
     public TreeMemoryCache(
         ITreeCachePersistence? persistence = null,
         MemoryCacheOptions? options = null,
-        ILogger<TreeMemoryCache>? logger = null)
+        ILogger<TreeMemoryCache>? logger = null,
+        ISizeEstimator? sizeEstimator = null)
     {
         _innerCache = new MemoryCache(options ?? new MemoryCacheOptions());
         _nodes = new ConcurrentDictionary<string, CacheNode>(StringComparer.Ordinal);
@@ -47,11 +50,13 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         _logger = logger;
         _statistics = new CacheStatisticsCollector();
         _persistence = persistence;
+        _sizeEstimator = sizeEstimator ?? new DefaultSizeEstimator();
     }
 
     private void EnsureNotDisposed()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_disposed != 0)
+            throw new ObjectDisposedException(nameof(TreeMemoryCache));
     }
 
     /// <inheritdoc />
@@ -67,7 +72,8 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         EnsureNotDisposed();
         if (key is string path)
         {
-            RemoveSingleNode(path);
+            RemoveInternal(path);
+            return;
         }
         _innerCache.Remove(key);
     }
@@ -162,7 +168,9 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
 
             if (_nodes.TryGetValue(normalizedPath, out var node))
             {
-                node.Size = EstimateSize(value);
+                // 树节点 Size 优先尊重显式 options.Size(契约:调用方负责),
+                // 未显式设置时回退到 ISizeEstimator 估算。
+                node.Size = options.Size ?? EstimateSize(value);
                 if (options.AbsoluteExpiration.HasValue)
                     node.ExpiresAt = options.AbsoluteExpiration.Value;
 
@@ -233,57 +241,30 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         _structureLock.EnterWriteLock();
         try
         {
-            // 如果是孤儿化模式，只处理自身节点，不处理后代
-            if (options.OrphanChildren)
+            var pathsToRemove = CollectDescendants(normalizedPath);
+            if (options.IncludeSelf)
             {
-                // 断开子节点的父子引用，但不删除它们
-                if (_nodes.TryGetValue(normalizedPath, out var node))
-                {
-                    foreach (var childPath in node.ChildPaths.ToList())
-                    {
-                        if (_nodes.TryGetValue(childPath, out var childNode))
-                        {
-                            childNode.ParentPath = null; // 孤儿化
-                        }
-                    }
-                }
-
-                // 删除自身
-                RemoveSingleNode(normalizedPath);
-                _innerCache.Remove(normalizedPath);
-
-                stopwatch.Stop();
-                _statistics.RecordCascadeDelete(1, stopwatch.Elapsed);
-                _logger?.LogInformation("Orphan children completed: {Path}", normalizedPath);
+                pathsToRemove.Insert(0, normalizedPath);
             }
             else
             {
-                // 原有逻辑：级联删除
-                var pathsToRemove = CollectDescendants(normalizedPath);
-                if (options.IncludeSelf)
-                {
-                    pathsToRemove.Insert(0, normalizedPath);
-                }
-                else
-                {
-                    pathsToRemove = pathsToRemove.Where(p => p != normalizedPath).ToList();
-                }
-
-                var count = 0;
-                foreach (var nodePath in pathsToRemove)
-                {
-                    RemoveSingleNode(nodePath);
-                    _innerCache.Remove(nodePath);
-                    count++;
-
-                    options.OnProgress?.Invoke(count);
-                }
-
-                stopwatch.Stop();
-                _statistics.RecordCascadeDelete(count, stopwatch.Elapsed);
-                _logger?.LogInformation("Cascade delete completed: {Path}, {Count} nodes removed in {Duration}ms",
-                    normalizedPath, count, stopwatch.ElapsedMilliseconds);
+                pathsToRemove = pathsToRemove.Where(p => p != normalizedPath).ToList();
             }
+
+            var count = 0;
+            foreach (var nodePath in pathsToRemove)
+            {
+                RemoveInternal(nodePath);
+                count++;
+
+                options.OnProgress?.Invoke(count);
+            }
+
+            stopwatch.Stop();
+            _statistics.RecordCascadeDelete(count, stopwatch.Elapsed);
+            _logger?.LogInformation(
+                "Cascade delete completed: {Path}, {Count} nodes removed in {Duration}ms",
+                normalizedPath, count, stopwatch.ElapsedMilliseconds);
         }
         finally
         {
@@ -309,8 +290,7 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
 
             foreach (var nodePath in pathsToRemove)
             {
-                RemoveSingleNode(nodePath);
-                _innerCache.Remove(nodePath);
+                RemoveInternal(nodePath);
             }
         }
         finally
@@ -411,12 +391,27 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         EnsureNotDisposed();
         ArgumentException.ThrowIfNullOrEmpty(tag);
 
-        var paths = GetPathsByTag(tag).ToList();
-        foreach (var path in paths)
+        // 在单个写锁内完成"快照 + 逐条删除 + 清理标签索引",
+        // 避免其他线程在快照后修改 tag 或路径导致的脏数据。
+        _structureLock.EnterWriteLock();
+        try
         {
-            RemoveTree(path);
+            if (!_tagIndex.TryGetValue(tag, out var paths))
+                return;
+
+            // 复制为本地 list,避免在迭代 HashSet 时其他回调修改它
+            var snapshot = paths.ToList();
+            foreach (var path in snapshot)
+            {
+                RemoveInternal(path);
+            }
+
+            _tagIndex.TryRemove(tag, out _);
         }
-        _tagIndex.TryRemove(tag, out _);
+        finally
+        {
+            _structureLock.ExitWriteLock();
+        }
     }
 
     /// <inheritdoc />
@@ -427,17 +422,21 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         try
         {
             var nodeCountByRoot = new Dictionary<string, long>();
-            long totalNodeCount = 0;
+            long trackedNodeCount = 0;
+            long cachedItemCount = 0;
             long totalCacheSize = 0;
 
             foreach (var (path, node) in _nodes)
             {
+                trackedNodeCount++;
+
+                // 只有 _innerCache 里真正存在的才算"cached item"
                 if (!_innerCache.TryGetValue(path, out _))
                 {
                     continue;
                 }
 
-                totalNodeCount++;
+                cachedItemCount++;
                 totalCacheSize += node.Size;
 
                 var root = GetRootPath(path);
@@ -447,7 +446,10 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
 
             return new CacheStatistics
             {
-                TotalNodeCount = totalNodeCount,
+                // 向后兼容:TotalNodeCount 仍表示"实际缓存条目数"(等同 TotalCachedItems)
+                TotalNodeCount = cachedItemCount,
+                TotalCachedItems = cachedItemCount,
+                TotalTrackedNodes = trackedNodeCount,
                 TotalCacheSize = totalCacheSize,
                 HitCount = _statistics.HitCount,
                 MissCount = _statistics.MissCount,
@@ -721,15 +723,14 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_disposed)
+        // 使用原子操作确保只有一个线程执行清理
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
         // 先释放内部资源（可能触发驱逐回调），此时还未持有锁
         _innerCache.Dispose();
         _nodes.Clear();
         _tagIndex.Clear();
-
-        _disposed = true;
 
         // 确保锁正确释放和销毁
         _structureLock?.Dispose();
@@ -769,8 +770,8 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     }
 
     /// <summary>
-    /// 删除单个节点并修复父子引用与标签索引。
-    /// 子节点的父子关系会被断开（孤儿化），而不是跳级连接到祖父节点。
+    /// 删除单个节点并清理其父子引用与标签索引。
+    /// 注意：本方法只删除指定节点本身，调用方需自行负责级联删除。
     /// </summary>
     private void RemoveSingleNode(string path)
     {
@@ -781,9 +782,6 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
             {
                 parentNode.ChildPaths.Remove(path);
             }
-
-            // 子节点保持孤儿状态（ParentPath 保持不变，指向已不存在的节点）
-            // 不再将其重新连接到祖父节点，避免破坏树形语义
 
             // 清理标签索引
             if (node.Tag is not null && _tagIndex.TryGetValue(node.Tag, out var taggedPaths))
@@ -796,6 +794,17 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// 统一的内部删除入口：同时清理树索引和 _innerCache。
+    /// 所有 TreeMemoryCache 内部触发的删除（包括 Remove/RemoveTree/ExecuteBatch/OnCacheEntryEvicted）
+    /// 都应走此方法，避免索引不同步。
+    /// </summary>
+    private void RemoveInternal(string path)
+    {
+        RemoveSingleNode(path);
+        _innerCache.Remove(path);
     }
 
     /// <summary>
@@ -877,15 +886,15 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     /// <summary>
     /// 估算缓存项大小，用于统计信息聚合。
     /// </summary>
-    private static long EstimateSize<T>(T value)
+    /// <remarks>
+    /// 委托给注入的 <see cref="ISizeEstimator"/>。默认 <see cref="DefaultSizeEstimator"/>
+    /// 对未知类型返回 0，表示"不参与 Size 统计"——这与原生
+    /// Microsoft.Extensions.Caching.Memory 的契约一致：调用方若关心容量，
+    /// 应当通过 <c>MemoryCacheEntryOptions.Size</c> 显式设置。
+    /// </remarks>
+    private long EstimateSize<T>(T value)
     {
-        return value switch
-        {
-            string s => s.Length * 2,
-            byte[] bytes => bytes.Length,
-            Array array => array.Length * 8,
-            _ => 100
-        };
+        return _sizeEstimator.EstimateSize(value);
     }
 
     /// <summary>
@@ -927,16 +936,14 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
                         }
                         break;
                     case OperationType.Remove:
-                        RemoveSingleNode(op.Path);
-                        _innerCache.Remove(op.Path);
+                        RemoveInternal(op.Path);
                         break;
                     case OperationType.RemoveTree:
                         var descendants = CollectDescendants(op.Path);
                         descendants.Insert(0, op.Path);
                         foreach (var p in descendants)
                         {
-                            RemoveSingleNode(p);
-                            _innerCache.Remove(p);
+                            RemoveInternal(p);
                         }
                         break;
                 }
