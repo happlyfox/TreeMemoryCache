@@ -3,11 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: '要发布的版本号 (如 0.1.2),会同步更新 NuGet.Package.Template.props'
+        description: '要发布的版本号 (如 0.1.2)'
         required: true
 
 env:
@@ -15,7 +15,6 @@ env:
 
 jobs:
   publish:
-    name: 发布到 nuget.org 与 GitHub Packages
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -24,21 +23,27 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 安装 .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      - name: 更新版本号
+        run: |
+          # tag 触发时从 GITHUB_REF 提取版本号，手动触发时使用输入的版本号
+          if [[ "${{ github.event.inputs.tag }}" != "" ]]; then
+            VERSION="${{ github.event.inputs.tag }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "版本号: ${VERSION}"
+          sed -i "s|<Version>[^<]*</Version>|<Version>${VERSION}</Version>|g" src/TreeMemoryCache/NuGet.Package.Template.props
+
       - name: 还原依赖
         run: dotnet restore
 
       - name: 构建并测试
-        # TreatWarningsAsErrors 由 Directory.Build.props 强制执行，
-        # 此处 --warnaserror 显式声明便于阅读。
         run: |
           dotnet build --no-restore --configuration Release --warnaserror
           dotnet test --no-build --configuration Release
