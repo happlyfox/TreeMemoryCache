@@ -37,8 +37,10 @@ jobs:
         run: dotnet restore
 
       - name: 构建并测试
+        # TreatWarningsAsErrors 由 Directory.Build.props 强制执行，
+        # 此处 --warnaserror 显式声明便于阅读。
         run: |
-          dotnet build --no-restore --configuration Release
+          dotnet build --no-restore --configuration Release --warnaserror
           dotnet test --no-build --configuration Release
 
       - name: 打包

@@ -27,7 +27,9 @@ jobs:
         run: dotnet restore
 
       - name: 构建（Release）
-        run: dotnet build --no-restore --configuration Release
+        # TreatWarningsAsErrors 由 Directory.Build.props 强制执行，
+        # 此处 --warnaserror 显式声明便于阅读。
+        run: dotnet build --no-restore --configuration Release --warnaserror
 
       - name: 运行测试
         run: dotnet test --no-build --configuration Release --logger trx --results-directory TestResults --collect:"XPlat Code Coverage"

@@ -1,0 +1,22 @@
+<Project>
+
+  <!--
+    解决方案级别的公共 MSBuild 属性。
+    文档：https://learn.microsoft.com/visualstudio/msbuild/customize-your-build
+  -->
+  <PropertyGroup>
+    <!--
+      将所有 csc 警告提升为错误。
+      任何 workflow / IDE / 命令行调用 build 时都会生效，
+      避免出现“workflow 改一行就绕过整个告警门”的回归。
+    -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!--
+      已知非错误的告警白名单（按需添加，使用 NoWarn 编号）。
+      留着空，但保留入口以便后续有需要时补充。
+    -->
+    <NoWarn>$(NoWarn)</NoWarn>
+  </PropertyGroup>
+
+</Project>
