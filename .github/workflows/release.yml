@@ -59,3 +59,4 @@ jobs:
           files: |
             ./artifacts/*.nupkg
             ./artifacts/*.snupkg
+          tag: ${{ github.event.inputs.tag || github.ref }}
