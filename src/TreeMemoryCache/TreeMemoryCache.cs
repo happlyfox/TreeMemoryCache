@@ -632,14 +632,14 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         _structureLock.EnterReadLock();
         try
         {
-            var orphanedPaths = new List<string>();
+            var deadParentLinks = 0;
             var tagDistribution = new Dictionary<string, int>(StringComparer.Ordinal);
 
             foreach (var (path, node) in _nodes)
             {
                 if (node.ParentPath is not null && !_nodes.ContainsKey(node.ParentPath))
                 {
-                    orphanedPaths.Add(path);
+                    deadParentLinks++;
                 }
 
                 if (node.Tag is not null)
@@ -657,11 +657,10 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
             return new CacheDiagnostics
             {
                 TotalNodes = _nodes.Count,
-                OrphanedNodes = orphanedPaths.Count,
+                DeadParentLinks = deadParentLinks,
                 EstimatedMemoryBytes = _nodes.Values.Sum(n => n.Size),
                 TagDistribution = tagDistribution,
-                DeepestPaths = deepestPaths,
-                OrphanedPaths = orphanedPaths
+                DeepestPaths = deepestPaths
             };
         }
         finally
