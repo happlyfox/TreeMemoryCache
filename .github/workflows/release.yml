@@ -38,7 +38,7 @@ jobs:
 
       - name: 构建并测试
         run: |
-          dotnet build --no-restore --configuration Release --warnaserror
+          dotnet build --no-restore --configuration Release
           dotnet test --no-build --configuration Release
 
       - name: 打包

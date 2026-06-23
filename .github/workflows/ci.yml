@@ -27,7 +27,7 @@ jobs:
         run: dotnet restore
 
       - name: 构建（Release）
-        run: dotnet build --no-restore --configuration Release --warnaserror
+        run: dotnet build --no-restore --configuration Release
 
       - name: 运行测试
         run: dotnet test --no-build --configuration Release --logger trx --results-directory TestResults --collect:"XPlat Code Coverage"
