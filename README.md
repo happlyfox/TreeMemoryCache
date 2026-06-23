@@ -2,6 +2,31 @@
 
 基于 `Microsoft.Extensions.Caching.Memory` 的树形内存缓存扩展：用路径层级组织缓存 Key，支持子树查询、批量操作与级联删除。
 
+[![NuGet](https://img.shields.io/nuget/v/TreeMemoryCache.svg?logo=nuget)](https://www.nuget.org/packages/TreeMemoryCache)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/TreeMemoryCache.svg?logo=nuget)](https://www.nuget.org/packages/TreeMemoryCache)
+[![GitHub Packages](https://img.shields.io/badge/GitHub%20Packages-TreeMemoryCache-181717.svg?logo=github)](https://github.com/happlyfox/TreeMemoryCache/packages)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+
+## 安装
+
+通过 .NET CLI 安装：
+
+```bash
+dotnet add package TreeMemoryCache
+```
+
+或在 `PackageReference` 中手动添加：
+
+```xml
+<PackageReference Include="TreeMemoryCache" Version="0.1.1" />
+```
+
+也可通过 NuGet Package Manager：
+
+```powershell
+Install-Package TreeMemoryCache
+```
+
 ## 特性
 
 - 树形路径缓存：使用 `:` 作为层级分隔符，例如 `Line:6:Upward:Stations`
