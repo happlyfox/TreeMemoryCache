@@ -18,6 +18,10 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     private readonly MemoryCache _innerCache;
     private readonly ConcurrentDictionary<string, CacheNode> _nodes;
     private readonly ConcurrentDictionary<string, HashSet<string>> _tagIndex;
+    // 第一段索引:第一段 -> 该段下所有 path。
+    // 用于加速 GetPathsByPattern("A:*") / "A:B:*" 等通配符查询,
+    // 避免对 _nodes 做全表扫描。
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, CacheNode>> _segmentIndex;
     private readonly ReaderWriterLockSlim _structureLock;
     private readonly ILogger<TreeMemoryCache>? _logger;
     private readonly CacheStatisticsCollector _statistics;
@@ -46,11 +50,16 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         _innerCache = new MemoryCache(options ?? new MemoryCacheOptions());
         _nodes = new ConcurrentDictionary<string, CacheNode>(StringComparer.Ordinal);
         _tagIndex = new ConcurrentDictionary<string, HashSet<string>>(StringComparer.Ordinal);
-        _structureLock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
+        _segmentIndex = new ConcurrentDictionary<string, ConcurrentDictionary<string, CacheNode>>(StringComparer.Ordinal);
+        // 使用 NoRecursion 策略:禁止同一线程递归获取锁。
+// 理由:在持锁回调(OnCacheEntryEvicted)中若试图重入,会立即抛
+// LockRecursionException,把"持锁调用户代码"这类隐性死锁暴露为编译/运行期错误。
+// 当前所有持锁回调路径(RemoveSingleNode)都不再调 _innerCache,故 NoRecursion 安全。
+_structureLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
         _logger = logger;
         _statistics = new CacheStatisticsCollector();
         _persistence = persistence;
-        _sizeEstimator = sizeEstimator ?? new DefaultSizeEstimator();
+        _sizeEstimator = sizeEstimator ?? DefaultSizeEstimator.Instance;
     }
 
     private void EnsureNotDisposed()
@@ -148,84 +157,107 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         _structureLock.EnterWriteLock();
         try
         {
-            EnsurePathExists(normalizedPath, segments, tag);
-
-            var entry = _innerCache.CreateEntry(normalizedPath);
-            entry.Value = value;
-
-            if (options.AbsoluteExpiration.HasValue)
-                entry.AbsoluteExpiration = options.AbsoluteExpiration.Value;
-            if (options.AbsoluteExpirationRelativeToNow.HasValue)
-                entry.AbsoluteExpirationRelativeToNow = options.AbsoluteExpirationRelativeToNow.Value;
-            if (options.SlidingExpiration.HasValue)
-                entry.SlidingExpiration = options.SlidingExpiration.Value;
-            if (options.Size.HasValue)
-                entry.Size = options.Size.Value;
-            if (options.Priority != CacheItemPriority.Normal)
-                entry.Priority = options.Priority;
-
-            entry.RegisterPostEvictionCallback(OnCacheEntryEvicted, normalizedPath);
-
-            if (_nodes.TryGetValue(normalizedPath, out var node))
-            {
-                // 树节点 Size 优先尊重显式 options.Size(契约:调用方负责),
-                // 未显式设置时回退到 ISizeEstimator 估算。
-                node.Size = options.Size ?? EstimateSize(value);
-                if (options.AbsoluteExpiration.HasValue)
-                    node.ExpiresAt = options.AbsoluteExpiration.Value;
-
-                // 如果标签发生变化，先从旧索引移除
-                if (node.Tag != tag && node.Tag is not null)
-                {
-                    if (_tagIndex.TryGetValue(node.Tag, out var oldPaths))
-                    {
-                        oldPaths.Remove(normalizedPath);
-                        if (oldPaths.Count == 0)
-                        {
-                            _tagIndex.TryRemove(node.Tag, out _);
-                        }
-                    }
-                }
-
-                // 无论什么情况，只要新标签不为空，添加到索引
-                if (tag is not null)
-                {
-                    var taggedPaths = _tagIndex.GetOrAdd(tag, _ => new HashSet<string>(StringComparer.Ordinal));
-                    taggedPaths.Add(normalizedPath);
-                }
-
-                // 总是更新节点标签
-                if (node.Tag != tag)
-                {
-                    node.Tag = tag;
-                }
-            }
-            else
-            {
-                // 节点不存在，但这里不应该走到，因为 EnsurePathExists 已经创建了
-                // 防御性处理：确保节点存在
-                var nodeBuilder = new CacheNode
-                {
-                    Path = normalizedPath,
-                    CreatedAt = DateTimeOffset.UtcNow,
-                    Tag = tag
-                };
-                _nodes.TryAdd(normalizedPath, nodeBuilder);
-                if (tag is not null)
-                {
-                    var taggedPaths = _tagIndex.GetOrAdd(tag, _ => new HashSet<string>(StringComparer.Ordinal));
-                    taggedPaths.Add(normalizedPath);
-                }
-                node = nodeBuilder;
-            }
-
-            _statistics.RecordSet();
-            return entry;
+            return SetTreeUnderLock(normalizedPath, segments, value, tag, options);
         }
         finally
         {
             _structureLock.ExitWriteLock();
         }
+    }
+
+    /// <summary>
+    /// 写锁内执行的 SetTree 核心逻辑。调用方必须已持有写锁。
+    /// </summary>
+    /// <remarks>
+    /// 抽离出来供 <see cref="ExecuteBatch"/> 直接调用,避免"持锁调 SetTree"的递归死锁。
+    /// </remarks>
+    private ICacheEntry SetTreeUnderLock<T>(
+        string normalizedPath,
+        ReadOnlySpan<string> segments,
+        T value,
+        string? tag,
+        MemoryCacheEntryOptions options)
+    {
+        EnsurePathExists(normalizedPath, segments, tag);
+
+        var entry = _innerCache.CreateEntry(normalizedPath);
+        entry.Value = value;
+
+        if (options.AbsoluteExpiration.HasValue)
+            entry.AbsoluteExpiration = options.AbsoluteExpiration.Value;
+        if (options.AbsoluteExpirationRelativeToNow.HasValue)
+            entry.AbsoluteExpirationRelativeToNow = options.AbsoluteExpirationRelativeToNow.Value;
+        if (options.SlidingExpiration.HasValue)
+            entry.SlidingExpiration = options.SlidingExpiration.Value;
+        if (options.Size.HasValue)
+            entry.Size = options.Size.Value;
+        if (options.Priority != CacheItemPriority.Normal)
+            entry.Priority = options.Priority;
+
+        entry.RegisterPostEvictionCallback(OnCacheEntryEvicted, normalizedPath);
+
+        if (_nodes.TryGetValue(normalizedPath, out var node))
+        {
+            // 树节点 Size 优先尊重显式 options.Size(契约:调用方负责),
+            // 未显式设置时回退到 ISizeEstimator 估算。
+            node.Size = options.Size ?? EstimateSize(value);
+            if (options.AbsoluteExpiration.HasValue)
+                node.ExpiresAt = options.AbsoluteExpiration.Value;
+
+            // 如果标签发生变化，先从旧索引移除
+            if (node.Tag != tag && node.Tag is not null)
+            {
+                if (_tagIndex.TryGetValue(node.Tag, out var oldPaths))
+                {
+                    oldPaths.Remove(normalizedPath);
+                    if (oldPaths.Count == 0)
+                    {
+                        _tagIndex.TryRemove(node.Tag, out _);
+                    }
+                }
+            }
+
+            // 无论什么情况，只要新标签不为空，添加到索引
+            if (tag is not null)
+            {
+                var taggedPaths = _tagIndex.GetOrAdd(tag, _ => new HashSet<string>(StringComparer.Ordinal));
+                taggedPaths.Add(normalizedPath);
+            }
+
+            // 总是更新节点标签
+            if (node.Tag != tag)
+            {
+                Console.Error.WriteLine($"[DEBUG] node-exists path={normalizedPath}, oldTag={node.Tag ?? "<null>"}, newTag={tag ?? "<null>"}, _tagIndex has tag1={_tagIndex.ContainsKey("tag1")}, has tag2={_tagIndex.ContainsKey("tag2")}");
+                node.Tag = tag;
+            }
+        }
+        else
+        {
+            // 节点不存在，但这里不应该走到，因为 EnsurePathExists 已经创建了
+            // 防御性处理：确保节点存在
+            var nodeBuilder = new CacheNode
+            {
+                Path = normalizedPath,
+                CreatedAt = DateTimeOffset.UtcNow,
+                Tag = tag
+            };
+            _nodes.TryAdd(normalizedPath, nodeBuilder);
+            if (tag is not null)
+            {
+                var taggedPaths = _tagIndex.GetOrAdd(tag, _ => new HashSet<string>(StringComparer.Ordinal));
+                taggedPaths.Add(normalizedPath);
+            }
+            node = nodeBuilder;
+        }
+
+        // 同步段索引:把 normalizedPath 加入第一段对应的桶
+        var firstSegment = normalizedPath.Split(':', 2)[0];
+        var bucket = _segmentIndex.GetOrAdd(firstSegment,
+            _ => new ConcurrentDictionary<string, CacheNode>(StringComparer.Ordinal));
+        bucket[normalizedPath] = node!;
+
+        _statistics.RecordSet();
+        return entry;
     }
 
     /// <inheritdoc />
@@ -358,11 +390,25 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         _structureLock.EnterReadLock();
         try
         {
+            // 第一段索引优化:模式形如 "Segment:*"、"Segment:Sub:*" 等,
+            // 直接从段索引的对应桶里取,不必遍历 _nodes 全表。
+            if (pattern.Contains('*'))
+            {
+                var firstSegment = GetFirstSegmentFromPattern(pattern);
+                if (firstSegment is not null && _segmentIndex.TryGetValue(firstSegment, out var bucket))
+                {
+                    var patternSegments = pattern.Split(':');
+                    return bucket.Keys
+                        .Where(path => MatchesPattern(path.Split(':'), patternSegments))
+                        .ToList();
+                }
+            }
+
             return pattern switch
             {
                 "*" => _nodes.Keys.ToList(),
                 "*:*" => _nodes.Keys.Where(k => k.Contains(':')).ToList(),
-                _ when pattern.Contains('*') => MatchPattern(pattern),
+                _ when pattern.Contains('*') => MatchPattern(pattern).ToList(),
                 _ => _nodes.Keys.Where(k => k == pattern).ToList()
             };
         }
@@ -370,6 +416,19 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
         {
             _structureLock.ExitReadLock();
         }
+    }
+
+    /// <summary>
+    /// 从通配符模式中提取第一段(如果第一段不是通配符)。
+    /// 例如 "A:*" 返回 "A","A:B:*" 返回 "A","*:*" 返回 null,"*" 返回 null。
+    /// </summary>
+    private static string? GetFirstSegmentFromPattern(string pattern)
+    {
+        var firstSeparator = pattern.IndexOf(':');
+        if (firstSeparator <= 0)
+            return null;
+        var firstSegment = pattern[..firstSeparator];
+        return firstSegment == "*" ? null : firstSegment;
     }
 
     /// <inheritdoc />
@@ -537,7 +596,7 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
                 {
                     Path = snapshot.Path,
                     ParentPath = snapshot.ParentPath,
-                    ChildPaths = new HashSet<string>(snapshot.ChildPaths, StringComparer.Ordinal),
+                    ChildPaths = new List<string>(snapshot.ChildPaths),
                     CreatedAt = snapshot.CreatedAt,
                     ExpiresAt = snapshot.ExpiresAt,
                     Size = snapshot.Size,
@@ -546,11 +605,9 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
 
                 _nodes[snapshot.Path] = node;
 
-                // 重建父节点引用
-                if (snapshot.ParentPath != null && _nodes.TryGetValue(snapshot.ParentPath, out var parentNode))
-                {
-                    parentNode.ChildPaths.Add(snapshot.Path);
-                }
+                // 父节点的子路径由 snapshot.ChildPaths 重建时已经处理,
+                // 这里不再重复 Add(snapshot.Path),否则 List 会出现重复。
+                // (HashSet 时代靠自动去重掩盖了这个问题。)
 
                 // 重建缓存值
                 if (snapshot.Value != null)
@@ -792,6 +849,18 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
                     _tagIndex.TryRemove(node.Tag, out _);
                 }
             }
+
+            // 同步段索引:从第一段对应的桶中移除
+            var firstSegment = path.Split(':', 2)[0];
+            if (_segmentIndex.TryGetValue(firstSegment, out var bucket))
+            {
+                bucket.TryRemove(path, out _);
+                // 如果桶为空,清理整个段索引条目(避免 _segmentIndex 累积空桶)
+                if (bucket.IsEmpty)
+                {
+                    _segmentIndex.TryRemove(firstSegment, out _);
+                }
+            }
         }
     }
 
@@ -807,11 +876,16 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     }
 
     /// <summary>
-    /// 广度优先收集指定路径下的全部后代路径。
+    /// 广度优先收集指定路径下的全部后代路径(不含 path 自身)。
     /// </summary>
+    /// <remarks>
+    /// 使用 HashSet 去重防御罕见回环场景(目前 RemoveSingleNode 会断开
+    /// 子节点的 ParentPath 但不主动重连,理论上不存在回环;此处保留防御)。
+    /// </remarks>
     private List<string> CollectDescendants(string path)
     {
         var result = new List<string>();
+        var visited = new HashSet<string>(StringComparer.Ordinal) { path };
         var queue = new Queue<string>();
         queue.Enqueue(path);
 
@@ -822,8 +896,11 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
             {
                 foreach (var child in node.ChildPaths)
                 {
-                    result.Add(child);
-                    queue.Enqueue(child);
+                    if (visited.Add(child))
+                    {
+                        result.Add(child);
+                        queue.Enqueue(child);
+                    }
                 }
             }
         }
@@ -899,9 +976,15 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
     /// <summary>
     /// 底层缓存驱逐回调，保持树索引与实际缓存一致。
     /// </summary>
+    /// <remarks>
+    /// 只在"真删除"场景下清理树节点:
+    ///   - Expired / Capacity / TokenExpired → 清
+    ///   - Replaced → 不清(同 key 新 entry 即将替代,树节点还要给新 entry 用)
+    ///   - Removed → 不清(显式 Remove 路径已通过 RemoveInternal 同步了树索引)
+    /// </remarks>
     private void OnCacheEntryEvicted(object key, object? value, EvictionReason reason, object? state)
     {
-        if (key is string path && reason != EvictionReason.Removed)
+        if (key is string path && IsRealEviction(reason))
         {
             _structureLock.EnterWriteLock();
             try
@@ -913,6 +996,17 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
                 _structureLock.ExitWriteLock();
             }
         }
+    }
+
+    /// <summary>
+    /// 判断是否"真删除"——原缓存项不再存活,树索引应同步清理。
+    /// Replaced 和 Removed 不算"真删除",因为新 entry 或显式 Remove 路径会处理。
+    /// </summary>
+    private static bool IsRealEviction(EvictionReason reason)
+    {
+        return reason is EvictionReason.Expired
+            or EvictionReason.Capacity
+            or EvictionReason.TokenExpired;
     }
 
     /// <summary>
@@ -930,7 +1024,11 @@ public sealed class TreeMemoryCache : ITreeMemoryCache
                     case OperationType.Set:
                         if (op.Value is not null)
                         {
-                            var entry = SetTree(op.Path, op.Value, op.Tag, op.Options);
+                            var normalizedPath = NormalizePath(op.Path);
+                            var segments = ParsePathSegments(normalizedPath);
+                            var options = op.Options ?? new MemoryCacheEntryOptions();
+                            // 直接调用 SetTreeUnderLock,避免"持锁调 SetTree"递归持锁
+                            var entry = SetTreeUnderLock(normalizedPath, segments, op.Value, op.Tag, options);
                             entry.Dispose();
                         }
                         break;

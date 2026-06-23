@@ -56,13 +56,14 @@ public sealed class JsonFilePersistence : ITreeCachePersistence
         // 序列化为 JSON
         var json = JsonSerializer.Serialize(_snapshots, _jsonOptions);
 
-        // 原子写入
+        // 原子写入:使用 File.Move(temp, target, overwrite: true) 一次原子替换。
+        // 与之前"Delete + Move"序列不同,这里:
+        // 1) 不再需要单独 Delete 步骤;
+        // 2) Move(overwrite) 在 NTFS/Linux 上是原子的 rename,即使断电也不会留下半写状态;
+        // 3) 不再有"Delete 失败但 Move 成功导致 target 是 tmp 文件"的隐患。
         var tempPath = _filePath + ".tmp";
         await File.WriteAllTextAsync(tempPath, json, cancellationToken);
-
-        if (File.Exists(_filePath))
-            File.Delete(_filePath);
-        File.Move(tempPath, _filePath);
+        File.Move(tempPath, _filePath, overwrite: true);
 
         _dirtyPaths.Clear();
         LastSavedAt = DateTimeOffset.UtcNow;

@@ -7,7 +7,7 @@ internal sealed class CacheNode
 {
     public required string Path { get; init; }
     public string? ParentPath { get; set; }
-    public HashSet<string> ChildPaths { get; set; } = new(StringComparer.Ordinal);
+    public List<string> ChildPaths { get; set; } = new();
     public DateTimeOffset CreatedAt { get; init; }
     public DateTimeOffset? ExpiresAt { get; set; }
     public long Size { get; set; }

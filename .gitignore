@@ -68,3 +68,7 @@ TestResults/
 *.coveragexml
 coverage/
 BenchmarkDotNet.Artifacts/
+
+# 临时工具输出(浏览器探查、缓存目录等)
+.tmp_mc.html
+cache/
