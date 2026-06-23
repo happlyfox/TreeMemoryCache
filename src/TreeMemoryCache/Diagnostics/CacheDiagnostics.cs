@@ -1,7 +1,7 @@
 namespace TreeMemoryCache.Diagnostics;
 
 /// <summary>
-/// 综合诊断信息,通过 <see cref="ITreeMemoryCache.GetDiagnostics"/> 获取。
+/// 综合诊断信息,通过 <see cref="TreeMemoryCache.GetDiagnostics()"/> 获取。
 /// </summary>
 /// <remarks>
 /// 与 <see cref="CacheStatistics"/> 不同,本结构提供运行时结构状态(孤儿节点、

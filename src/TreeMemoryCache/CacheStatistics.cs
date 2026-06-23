@@ -32,13 +32,13 @@ public sealed class CacheStatistics
 
     /// <summary>
     /// 通过 <see cref="ITreeMemoryCache.TryGetTree{T}(string, out T)"/> 或
-    /// <see cref="ITreeMemoryCache.TryGetValue(object, out object?)"/> 命中缓存的累计次数。
+    /// <c>IMemoryCache.TryGetValue</c> 命中缓存的累计次数。
     /// </summary>
     public long HitCount { get; init; }
 
     /// <summary>
     /// 通过 <see cref="ITreeMemoryCache.TryGetTree{T}(string, out T)"/> 或
-    /// <see cref="ITreeMemoryCache.TryGetValue(object, out object?)"/> 未命中的累计次数。
+    /// <c>IMemoryCache.TryGetValue</c> 未命中的累计次数。
     /// </summary>
     public long MissCount { get; init; }
 

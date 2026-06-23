@@ -137,18 +137,20 @@ public sealed class JsonFilePersistence : ITreeCachePersistence
     public bool Exists() => File.Exists(_filePath);
 
     /// <inheritdoc />
-    public async ValueTask<StorageMetadata?> GetMetadataAsync(CancellationToken cancellationToken = default)
+    public ValueTask<StorageMetadata?> GetMetadataAsync(CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (!Exists())
-            return null;
+            return ValueTask.FromResult<StorageMetadata?>(null);
 
         var fileInfo = new FileInfo(_filePath);
-        return new StorageMetadata
+        return ValueTask.FromResult<StorageMetadata?>(new StorageMetadata
         {
             NodeCount = _snapshots?.Count ?? 0,
             CreatedAt = fileInfo.CreationTimeUtc,
             SizeBytes = fileInfo.Length
-        };
+        });
     }
 
     /// <summary>

@@ -41,7 +41,7 @@ public interface ITreeMemoryCache : IMemoryCache, IDisposable
     /// 按树路径写入缓存项。必须在拿到 <see cref="ICacheEntry"/> 后调用 <c>Dispose()</c> 提交。
     /// 推荐使用便捷扩展 <see cref="TreeMemoryCacheExtensions.SetTreeValue{T}(ITreeMemoryCache, string, T, MemoryCacheEntryOptions?)"/>。
     /// </summary>
-    /// <typeparam name="value">缓存值的类型。</typeparam>
+    /// <typeparam name="T">缓存值的类型。</typeparam>
     /// <param name="path">缓存路径。</param>
     /// <param name="value">要写入的值。</param>
     /// <param name="options">内存缓存条目选项(过期时间、容量等)。默认 <c>null</c>。</param>
