@@ -72,3 +72,8 @@ BenchmarkDotNet.Artifacts/
 # 临时工具输出(浏览器探查、缓存目录等)
 .tmp_mc.html
 cache/
+
+# AI 助手工具配置(不是项目源码)
+CLAUDE.md              # Claude Code 项目规则
+.trae/                 # Trae AI 工具的项目规则
+docs/superpowers/plans/  # superpowers 实施计划(过程工件,非项目文档)
