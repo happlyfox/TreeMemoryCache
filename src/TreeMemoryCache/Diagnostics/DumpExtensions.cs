@@ -1,10 +1,10 @@
 using System.IO;
-using Spectre.Console;
+using System.Text;
 
 namespace TreeMemoryCache.Diagnostics;
 
 /// <summary>
-/// 树形缓存的文本可视化扩展,基于 Spectre.Console。
+/// 树形缓存的文本可视化扩展。
 /// </summary>
 public static class DumpExtensions
 {
@@ -16,53 +16,42 @@ public static class DumpExtensions
     /// <remarks>
     /// 输出格式为分层树形:
     /// <list type="bullet">
-    /// <item>绿色节点:路径上有实际缓存值</item>
-    /// <item>灰色节点:仅作为中间路径节点存在(无缓存值)</item>
+    /// <item>■ 前缀:路径上有实际缓存值</item>
+    /// <item>□ 前缀:仅作为中间路径节点(无缓存值)</item>
     /// </list>
+    /// 树形连线使用标准 Box-Drawing 字符:├─ └─ │ 。
     /// </remarks>
     public static void Dump(this TreeMemoryCache cache, TextWriter? writer = null)
     {
         writer ??= Console.Out;
 
-        var tree = BuildTree(cache);
-        AnsiConsole.Write(tree);
-        writer.WriteLine();
-    }
+        var sb = new StringBuilder();
+        sb.AppendLine("TreeMemoryCache");
 
-    private static Tree BuildTree(TreeMemoryCache cache)
-    {
-        var rootNodes = cache.GetRootNodes();
-        var tree = new Tree("[bold]TreeMemoryCache[/]");
-
-        foreach (var kvp in rootNodes)
+        foreach (var (path, _) in cache.GetRootNodes())
         {
-            BuildTreeNode(tree, kvp.Key, cache);
+            AppendNode(sb, path, cache, isLast: false, prefix: "");
         }
 
-        return tree;
+        writer.Write(sb.ToString());
     }
 
-    private static void BuildTreeNode(Tree parentTree, string path, TreeMemoryCache cache)
+    private static void AppendNode(StringBuilder sb, string path, TreeMemoryCache cache, bool isLast, string prefix)
     {
         var hasValue = cache.TryGetValue(path, out _);
-        var style = hasValue ? "green" : "dim";
-        var node = parentTree.AddNode($"[{style}]{Markup.Escape(path)}[/{style}]");
+        var marker = hasValue ? "■ " : "□ ";
+        var connector = isLast ? "└─ " : "├─ ";
+        sb.Append(prefix);
+        sb.Append(connector);
+        sb.Append(marker);
+        sb.AppendLine(path);
 
-        foreach (var childPath in cache.GetChildPaths(path))
+        var childPaths = cache.GetChildPaths(path).ToList();
+        for (var i = 0; i < childPaths.Count; i++)
         {
-            BuildChildNode(node, childPath, cache);
-        }
-    }
-
-    private static void BuildChildNode(TreeNode parentNode, string path, TreeMemoryCache cache)
-    {
-        var hasValue = cache.TryGetValue(path, out _);
-        var style = hasValue ? "green" : "dim";
-        var node = parentNode.AddNode($"[{style}]{Markup.Escape(path)}[/{style}]");
-
-        foreach (var childPath in cache.GetChildPaths(path))
-        {
-            BuildChildNode(node, childPath, cache);
+            var childIsLast = i == childPaths.Count - 1;
+            var childPrefix = prefix + (isLast ? "    " : "│   ");
+            AppendNode(sb, childPaths[i], cache, childIsLast, childPrefix);
         }
     }
 }

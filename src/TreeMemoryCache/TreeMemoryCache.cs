@@ -591,6 +591,10 @@ _structureLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
         {
             foreach (var snapshot in snapshots)
             {
+                // 跳过已过期的快照
+                if (snapshot.ExpiresAt.HasValue && snapshot.ExpiresAt.Value <= DateTimeOffset.UtcNow)
+                    continue;
+
                 // 重建 CacheNode
                 var node = new CacheNode
                 {
