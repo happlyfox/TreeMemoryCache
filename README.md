@@ -2,6 +2,8 @@
 
 基于 `Microsoft.Extensions.Caching.Memory` 的树形内存缓存扩展：用路径层级组织缓存 Key，支持子树查询、批量操作与级联删除。
 
+[![CI](https://github.com/happlyfox/TreeMemoryCache/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/happlyfox/TreeMemoryCache/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/happlyfox/TreeMemoryCache/branch/main/graph/badge.svg)](https://codecov.io/gh/happlyfox/TreeMemoryCache)
 [![NuGet](https://img.shields.io/nuget/v/TreeMemoryCache.svg?logo=nuget)](https://www.nuget.org/packages/TreeMemoryCache)
 [![NuGet Downloads](https://img.shields.io/nuget/dt/TreeMemoryCache.svg?logo=nuget)](https://www.nuget.org/packages/TreeMemoryCache)
 [![GitHub Packages](https://img.shields.io/badge/GitHub%20Packages-TreeMemoryCache-181717.svg?logo=github)](https://github.com/happlyfox/TreeMemoryCache/packages)
@@ -36,6 +38,14 @@ Install-Package TreeMemoryCache
 - 批量操作：通过 `TreeCacheBatch` 一次提交多条变更
 - 依赖注入友好：提供 `IServiceCollection` 扩展快速接入
 - 统计与观测：命中/未命中、级联删除次数、平均访问耗时等
+
+## 适用场景
+
+- **分层配置缓存**：按模块/环境/区域组织配置，如 `Config:Prod:Region:East:DBSettings`
+- **用户数据缓存**：按用户 ID 组织，支持一键清理用户全部缓存 `RemoveTree("User:12345")`
+- **业务实体缓存**：如地铁线路、站点、时刻表等有层级关系的数据
+- **菜单/导航缓存**：按菜单层级组织，支持批量操作
+- **会话状态管理**：按会话 ID 层级组织，便于追踪和清理
 
 ## 环境要求
 
